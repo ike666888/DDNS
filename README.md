@@ -55,6 +55,8 @@ sudo bash install.sh
 curl -fsSL https://raw.githubusercontent.com/ike666888/DDNS/main/install.sh | sudo bash
 ```
 
+> 提示：首次安装最后会自动执行一次 `--run`。若当下网络到 Cloudflare 不稳定（例如偶发 HTTP/2 错误），安装不会中断；稍后手动重试即可。
+
 
 
 ### 依赖自动安装说明
@@ -165,6 +167,11 @@ tail -n 100 /var/log/cf-ddns.log
 
 3. **无公网 IPv6**
    - 若网络不支持 IPv6，请使用 `A` 或忽略 `AAAA`
+
+4. **curl: HTTP/2 PROTOCOL_ERROR**
+   - 通常是线路或中间网络设备导致的临时问题
+   - 新版脚本会自动重试并回退到 HTTP/1.1
+   - 如仍失败，可稍后重新执行：`/usr/local/bin/cf-ddns.sh --run`
 
 ---
 

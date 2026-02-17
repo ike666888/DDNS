@@ -33,10 +33,11 @@ PROXIED="${PROXIED:-keep}"            # keep | true | false
 
 WANIPSITE_V4="${WANIPSITE_V4:-https://api.ipify.org}"
 WANIPSITE_V6="${WANIPSITE_V6:-https://api64.ipify.org}"
-CURL_OPTS=(-fsS --max-time 10)
+CURL_OPTS=(-fsS --max-time 12 --retry 2 --retry-delay 1 --retry-all-errors)
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
+warn() { echo "WARN: $*" >&2; }
 
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
@@ -72,17 +73,23 @@ json_get_first_string() {
 
 cf_api() {
   local method="$1" url="$2" data="${3:-}"
+  local auth_header=( -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" )
+
   if [ -n "$data" ]; then
-    curl "${CURL_OPTS[@]}" -X "$method" "$url" \
-      -H "Authorization: Bearer $CF_API_TOKEN" \
-      -H "Content-Type: application/json" \
-      --data "$data"
+    if curl "${CURL_OPTS[@]}" -X "$method" "$url" "${auth_header[@]}" --data "$data"; then
+      return 0
+    fi
+    warn "Cloudflare API request failed, retrying with HTTP/1.1 ..."
+    curl "${CURL_OPTS[@]}" --http1.1 -X "$method" "$url" "${auth_header[@]}" --data "$data"
   else
-    curl "${CURL_OPTS[@]}" -X "$method" "$url" \
-      -H "Authorization: Bearer $CF_API_TOKEN" \
-      -H "Content-Type: application/json"
+    if curl "${CURL_OPTS[@]}" -X "$method" "$url" "${auth_header[@]}"; then
+      return 0
+    fi
+    warn "Cloudflare API request failed, retrying with HTTP/1.1 ..."
+    curl "${CURL_OPTS[@]}" --http1.1 -X "$method" "$url" "${auth_header[@]}"
   fi
 }
+
 
 get_wan_ip_v4() { curl "${CURL_OPTS[@]}" "$WANIPSITE_V4"; }
 get_wan_ip_v6() { curl "${CURL_OPTS[@]}" "$WANIPSITE_V6"; }
@@ -183,6 +190,11 @@ interactive_setup() {
   CFTTL="$(prompt "6) TTL 秒数 (120-86400)" "${CFTTL:-120}")"
   FORCE="$(prompt "7) 是否强制更新 true/false" "${FORCE:-false}")"
   PROXIED="$(prompt "8) 是否开启代理 keep/true/false (一般 keep)" "${PROXIED:-keep}")"
+
+  # Normalize common user input forms
+  CFRECORD_TYPE="$(echo "$CFRECORD_TYPE" | tr '[:lower:]' '[:upper:]')"
+  FORCE="$(echo "$FORCE" | tr '[:upper:]' '[:lower:]')"
+  PROXIED="$(echo "$PROXIED" | tr '[:upper:]' '[:lower:]')"
 
   normalize_fqdn
   validate_config
@@ -311,16 +323,22 @@ run_ddns() {
   normalize_fqdn
   validate_config
 
-  # Cache zone id in conf dir (safe)
+  # Zone ID: prefer explicit config, then cache, then API lookup
   local zid_file="${CACHE_DIR}/.cf-zone_$(cache_key "$CFZONE_NAME").txt"
-  local zone_id=""
-  if [ -f "$zid_file" ]; then
-    zone_id="$(cat "$zid_file" 2>/dev/null || true)"
-  fi
-  if [ -z "$zone_id" ]; then
-    info "Fetching zone id..."
-    zone_id="$(get_zone_id)"
-    echo "$zone_id" > "$zid_file"
+  local zone_id="${CFZONE_ID:-}"
+  if [ -n "$zone_id" ]; then
+    info "Using Zone ID from config"
+  else
+    if [ -f "$zid_file" ]; then
+      zone_id="$(cat "$zid_file" 2>/dev/null || true)"
+    fi
+    if [ -n "$zone_id" ]; then
+      info "Using cached Zone ID"
+    else
+      info "Fetching Zone ID from Cloudflare API..."
+      zone_id="$(get_zone_id)"
+      echo "$zone_id" > "$zid_file"
+    fi
   fi
 
   case "$CFRECORD_TYPE" in

@@ -148,7 +148,7 @@ install_ddns() {
 
   local tmp
   tmp="$(mktemp)"
-  trap 'rm -f "$tmp"' EXIT
+  trap "rm -f '$tmp'" EXIT
 
   fetch_script "$tmp"
   # sanity check
@@ -196,8 +196,12 @@ install_cron() {
 
 run_once() {
   info "Running once now..."
-  ( cd "$BIN_DIR" && "$DDNS_BIN" --run )
-  info "Done. Logs: ${LOG_FILE}"
+  if ( cd "$BIN_DIR" && "$DDNS_BIN" --run ); then
+    info "Done. Logs: ${LOG_FILE}"
+  else
+    warn "Initial run failed (network/API may be temporarily unavailable)."
+    warn "Installer will continue. You can retry manually: ${DDNS_BIN} --run"
+  fi
 }
 
 print_next_steps() {
