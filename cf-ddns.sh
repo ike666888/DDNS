@@ -158,24 +158,29 @@ load_config_if_exists() {
 prompt() {
   local label="$1" default="${2:-}" secret="${3:-false}"
   local val=""
+  local input_fd="/dev/stdin"
+  if [ -r /dev/tty ]; then
+    input_fd="/dev/tty"
+  fi
+
   if [ "$secret" = "true" ]; then
-    # secret input
     if [ -n "$default" ]; then
-      read -r -s -p "$label (留空保持现有): " val; echo
+      read -r -s -p "$label (留空保持现有): " val < "$input_fd"; echo
       [ -z "$val" ] && val="$default"
     else
-      read -r -s -p "$label: " val; echo
+      read -r -s -p "$label: " val < "$input_fd"; echo
     fi
   else
     if [ -n "$default" ]; then
-      read -r -p "$label [$default]: " val
+      read -r -p "$label [$default]: " val < "$input_fd"
       [ -z "$val" ] && val="$default"
     else
-      read -r -p "$label: " val
+      read -r -p "$label: " val < "$input_fd"
     fi
   fi
   echo "$val"
 }
+
 
 interactive_setup() {
   info "Cloudflare DDNS 交互配置"
@@ -220,10 +225,29 @@ print_config() {
   echo "WANIPSITE_V6=${WANIPSITE_V6:-}"
 }
 
+verify_zone_id() {
+  local zid="$1" verify_json ok
+  verify_json="$(cf_api GET "https://api.cloudflare.com/client/v4/zones/$zid")" || return 1
+  if has_cmd jq; then
+    ok="$(echo "$verify_json" | jq -r '.success // false')"
+  else
+    if printf '%s' "$verify_json" | grep -q '"success":true'; then
+      ok="true"
+    else
+      ok="false"
+    fi
+  fi
+  [ "$ok" = "true" ]
+}
+
+
 get_zone_id() {
   if [ -n "$CFZONE_ID" ]; then
-    echo "$CFZONE_ID"
-    return 0
+    if verify_zone_id "$CFZONE_ID"; then
+      echo "$CFZONE_ID"
+      return 0
+    fi
+    warn "Configured CFZONE_ID seems invalid, fallback to zone-name lookup"
   fi
 
   local zone_json zone_id
@@ -240,15 +264,43 @@ get_zone_id() {
 get_record_id() {
   local zone_id="$1" rtype="$2"
   local rec_json rec_id
-  rec_json="$(cf_api GET "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records?type=$rtype&name=$CFRECORD_NAME")" || die "Record query failed"
+  rec_json="$(cf_api GET "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records?type=$rtype&name=$CFRECORD_NAME")" || return 1
   if has_cmd jq; then
     rec_id="$(echo "$rec_json" | jq -r '.result[0].id // empty')"
   else
     rec_id="$(json_get_first_string "$rec_json" "id")"
   fi
-  [ -n "$rec_id" ] || die "Cannot find record id for $CFRECORD_NAME ($rtype). Create it in CF DNS first. Response: $rec_json"
+  [ -n "$rec_id" ] || return 1
   echo "$rec_id"
 }
+
+create_record() {
+  local zone_id="$1" rtype="$2" wan_ip="$3"
+  local payload resp ok rec_id
+
+  if [ "$PROXIED" = "keep" ]; then
+    payload="$(printf '{"type":"%s","name":"%s","content":"%s","ttl":%s}' "$rtype" "$CFRECORD_NAME" "$wan_ip" "$CFTTL")"
+  else
+    payload="$(printf '{"type":"%s","name":"%s","content":"%s","ttl":%s,"proxied":%s}' "$rtype" "$CFRECORD_NAME" "$wan_ip" "$CFTTL" "$PROXIED")"
+  fi
+
+  resp="$(cf_api POST "https://api.cloudflare.com/client/v4/zones/$zone_id/dns_records" "$payload")" || die "Create record request failed"
+  if has_cmd jq; then
+    ok="$(echo "$resp" | jq -r '.success // false')"
+    rec_id="$(echo "$resp" | jq -r '.result.id // empty')"
+  else
+    if printf '%s' "$resp" | grep -q '"success":true'; then
+      ok="true"
+    else
+      ok="false"
+    fi
+    rec_id="$(json_get_first_string "$resp" "id")"
+  fi
+  [ "$ok" = "true" ] || die "Create record failed. Response: $resp"
+  [ -n "$rec_id" ] || die "Create record success but no id found. Response: $resp"
+  echo "$rec_id"
+}
+
 
 get_record_current() {
   local zone_id="$1" record_id="$2"
@@ -306,12 +358,22 @@ run_one() {
     record_id="$(cat "$rec_file" 2>/dev/null || true)"
   fi
   if [ -z "$record_id" ]; then
-    record_id="$(get_record_id "$zone_id" "$rtype")"
-    echo "$record_id" > "$rec_file"
+    record_id="$(get_record_id "$zone_id" "$rtype" || true)"
   fi
 
+  if [ -z "$record_id" ]; then
+    echo "[$rtype] Record not found, creating $CFRECORD_NAME -> $wan_ip"
+    record_id="$(create_record "$zone_id" "$rtype" "$wan_ip")"
+  fi
+
+  echo "$record_id" > "$rec_file"
   echo "[$rtype] Updating $CFRECORD_NAME -> $wan_ip (ttl=$CFTTL, proxied=$PROXIED)"
-  update_record "$zone_id" "$record_id" "$rtype" "$wan_ip"
+  if ! update_record "$zone_id" "$record_id" "$rtype" "$wan_ip"; then
+    warn "[$rtype] Update by cached record id failed, retry by querying record id"
+    record_id="$(get_record_id "$zone_id" "$rtype")"
+    echo "$record_id" > "$rec_file"
+    update_record "$zone_id" "$record_id" "$rtype" "$wan_ip"
+  fi
   echo "$wan_ip" > "$ip_file"
   echo "[$rtype] OK"
 }
@@ -327,10 +389,22 @@ run_ddns() {
   local zid_file="${CACHE_DIR}/.cf-zone_$(cache_key "$CFZONE_NAME").txt"
   local zone_id="${CFZONE_ID:-}"
   if [ -n "$zone_id" ]; then
-    info "Using Zone ID from config"
-  else
+    if verify_zone_id "$zone_id"; then
+      info "Using Zone ID from config"
+    else
+      warn "Configured Zone ID invalid, fallback to auto lookup"
+      zone_id=""
+    fi
+  fi
+
+  if [ -z "$zone_id" ]; then
     if [ -f "$zid_file" ]; then
       zone_id="$(cat "$zid_file" 2>/dev/null || true)"
+      if [ -n "$zone_id" ] && ! verify_zone_id "$zone_id"; then
+        warn "Cached Zone ID invalid, clearing cache"
+        zone_id=""
+        rm -f "$zid_file"
+      fi
     fi
     if [ -n "$zone_id" ]; then
       info "Using cached Zone ID"

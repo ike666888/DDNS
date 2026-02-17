@@ -56,6 +56,8 @@ curl -fsSL https://raw.githubusercontent.com/ike666888/DDNS/main/install.sh | su
 ```
 
 > 提示：首次安装最后会自动执行一次 `--run`。若当下网络到 Cloudflare 不稳定（例如偶发 HTTP/2 错误），安装不会中断；稍后手动重试即可。
+>
+> 管道执行时（`curl ... | sudo bash`），脚本会从 `/dev/tty` 读取交互输入。
 
 
 
@@ -95,6 +97,14 @@ AUTO_APT_UPGRADE=true sudo bash install.sh
 ---
 
 ## 交互配置（仅主脚本）
+
+如果通过 `install.sh` 安装完成，也可以直接使用命令：
+
+```bash
+DDNS
+```
+
+`DDNS` 可以直接调出交互配置；也支持传参，例如 `DDNS --run`。
 
 如果你已经有 `cf-ddns.sh`，也可以手动执行：
 

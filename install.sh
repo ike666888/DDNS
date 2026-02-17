@@ -6,6 +6,7 @@ RAW_BASE_MASTER="https://raw.githubusercontent.com/ike666888/DDNS/master"
 
 BIN_DIR="/usr/local/bin"
 DDNS_BIN="${BIN_DIR}/cf-ddns.sh"
+DDNS_CMD="${BIN_DIR}/DDNS"
 CONF_FILE="${BIN_DIR}/cf-ddns.conf"
 LOG_FILE="/var/log/cf-ddns.log"
 
@@ -142,6 +143,19 @@ ensure_log_file() {
   chmod 0644 "$LOG_FILE" || true
 }
 
+install_launcher() {
+  cat > "$DDNS_CMD" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" -eq 0 ]; then
+  exec /usr/local/bin/cf-ddns.sh --setup
+fi
+exec /usr/local/bin/cf-ddns.sh "$@"
+EOF
+  chmod 0755 "$DDNS_CMD"
+  info "Installed helper command: ${DDNS_CMD} (run DDNS for interactive setup)"
+}
+
 install_ddns() {
   info "Installing cf-ddns.sh to ${DDNS_BIN}"
   mkdir -p "$BIN_DIR"
@@ -212,6 +226,9 @@ All set ✅
 Binary:
   ${DDNS_BIN}
 
+Helper command:
+  ${DDNS_CMD}    # run DDNS for interactive setup
+
 Config (DO NOT COMMIT to GitHub):
   ${CONF_FILE}
 
@@ -232,6 +249,7 @@ main() {
   ensure_dependencies
   ensure_log_file
   install_ddns
+  install_launcher
   setup_config_if_missing
   install_cron
   run_once
