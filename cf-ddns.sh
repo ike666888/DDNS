@@ -398,6 +398,7 @@ run_ddns() {
 
   normalize_fqdn
   validate_config
+  validate_api_token || die "CF_API_TOKEN 无效或权限不足。请确认你使用的是 API Token（不是 Global API Key），并授予 Zone DNS Edit + Zone Read。"
 
   # Zone ID: prefer explicit config, then cache, then API lookup
   local zid_file="${CACHE_DIR}/.cf-zone_$(cache_key "$CFZONE_NAME").txt"
