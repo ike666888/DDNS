@@ -114,7 +114,6 @@ validate_api_token() {
   return 0
 }
 
-
 get_wan_ip_v4() { curl "${CURL_OPTS[@]}" "$WANIPSITE_V4"; }
 get_wan_ip_v6() { curl "${CURL_OPTS[@]}" "$WANIPSITE_V6"; }
 
@@ -232,8 +231,10 @@ interactive_setup() {
   normalize_fqdn
   validate_config
 
-  info "正在校验 API Token..."
-  validate_api_token || die "CF_API_TOKEN 无效或权限不足。请使用 API Token（Zone DNS Edit + Zone Read），不要填 Global API Key/账户ID。"
+  info "正在校验 API Token（非强制）..."
+  if ! validate_api_token; then
+    warn "无法通过 /user/tokens/verify 校验 Token，可能是权限模型限制；将继续保存并在运行阶段验证。"
+  fi
 
   info "将更新的记录：$CFRECORD_NAME  类型：$CFRECORD_TYPE  TTL：$CFTTL  PROXIED：$PROXIED"
   write_config
@@ -256,29 +257,11 @@ print_config() {
   echo "WANIPSITE_V6=${WANIPSITE_V6:-}"
 }
 
-verify_zone_id() {
-  local zid="$1" verify_json ok
-  verify_json="$(cf_api GET "https://api.cloudflare.com/client/v4/zones/$zid")" || return 1
-  if has_cmd jq; then
-    ok="$(echo "$verify_json" | jq -r '.success // false')"
-  else
-    if printf '%s' "$verify_json" | grep -q '"success":true'; then
-      ok="true"
-    else
-      ok="false"
-    fi
-  fi
-  [ "$ok" = "true" ]
-}
-
 
 get_zone_id() {
   if [ -n "$CFZONE_ID" ]; then
-    if verify_zone_id "$CFZONE_ID"; then
-      echo "$CFZONE_ID"
-      return 0
-    fi
-    warn "Configured CFZONE_ID seems invalid (可能填成账户ID), fallback to zone-name lookup"
+    echo "$CFZONE_ID"
+    return 0
   fi
 
   local zone_json zone_id
@@ -421,22 +404,10 @@ run_ddns() {
   local zid_file="${CACHE_DIR}/.cf-zone_$(cache_key "$CFZONE_NAME").txt"
   local zone_id="${CFZONE_ID:-}"
   if [ -n "$zone_id" ]; then
-    if verify_zone_id "$zone_id"; then
-      info "Using Zone ID from config"
-    else
-      warn "Configured Zone ID invalid, fallback to auto lookup"
-      zone_id=""
-    fi
-  fi
-
-  if [ -z "$zone_id" ]; then
+    info "Using Zone ID from config"
+  else
     if [ -f "$zid_file" ]; then
       zone_id="$(cat "$zid_file" 2>/dev/null || true)"
-      if [ -n "$zone_id" ] && ! verify_zone_id "$zone_id"; then
-        warn "Cached Zone ID invalid, clearing cache"
-        zone_id=""
-        rm -f "$zid_file"
-      fi
     fi
     if [ -n "$zone_id" ]; then
       info "Using cached Zone ID"

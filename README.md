@@ -35,6 +35,7 @@
 
 > 必须使用 **API Token**，不要使用 **Global API Key**。
 > `Zone ID` 和 `账户 ID` 不是同一个值，脚本里填写的是 `Zone ID`。
+> 某些 Token 在 `/user/tokens/verify` 可能无法通过，但只要 DNS 更新权限正确，脚本仍可正常工作。
 
 安装机需要：
 - Linux 环境
@@ -178,10 +179,16 @@ tail -n 100 /var/log/cf-ddns.log
    - 脚本默认更新已存在记录，请先在 Cloudflare DNS 中创建记录
    - 再执行 `--run`
 
-3. **无公网 IPv6**
+3. **提示权限不足 / 400 Bad Request**
+   - 确认使用的是 API Token（不是 Global API Key）
+   - 权限至少包含：`Zone:DNS:Edit`，建议再加 `Zone:Zone:Read`
+   - 若令牌“区域资源”选择了“特定区域”，必须把目标域名（如 `ike-nicholas.xyz`）加入选择列表
+   - `Zone ID` 必须是该域名的区域 ID，不是账户 ID
+
+4. **无公网 IPv6**
    - 若网络不支持 IPv6，请使用 `A` 或忽略 `AAAA`
 
-4. **curl: HTTP/2 PROTOCOL_ERROR**
+5. **curl: HTTP/2 PROTOCOL_ERROR**
    - 通常是线路或中间网络设备导致的临时问题
    - 新版脚本会自动重试并回退到 HTTP/1.1
    - 如仍失败，可稍后重新执行：`/usr/local/bin/cf-ddns.sh --run`
