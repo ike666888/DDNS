@@ -1,1 +1,143 @@
-# DDNS
+# Cloudflare DDNS 一键脚本
+
+一个适用于家庭宽带动态公网 IP 的 Cloudflare DDNS 脚本集合：
+- `install.sh`：一键安装（安装脚本、交互配置、写入定时任务、立即执行一次）
+- `cf-ddns.sh`：核心更新脚本（支持交互配置和定时更新）
+
+## 功能特点
+- 交互式输入 Cloudflare **DNS API Token**
+- 可选输入 Cloudflare **Zone ID（区域 API）**，留空自动按主域名查询
+- 交互输入 **主域名** 与 **二级域名**（支持 `@` 根域名）
+- 支持记录类型：`A` / `AAAA` / `BOTH`
+- 仅 IP 变化时更新（可配置强制更新）
+- 支持保持 / 开启 / 关闭 Cloudflare 代理状态（`keep/true/false`）
+- 自动写入 cron，默认每 5 分钟运行一次
+
+---
+
+## 目录结构
+
+```text
+.
+├── cf-ddns.sh   # DDNS 主脚本
+├── install.sh   # 一键安装脚本（需 root）
+├── README.md
+└── LICENSE
+```
+
+---
+
+## 前置准备
+
+请先在 Cloudflare 创建一个 API Token（推荐最小权限）：
+- Zone → DNS → Edit
+- Zone → Zone → Read
+
+安装机需要：
+- Linux 环境
+- `curl` 或 `wget`
+- `cron` / `crontab`
+- root 权限（用于安装到 `/usr/local/bin` 和写入定时任务）
+
+---
+
+## 一键安装
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ike666888/DDNS/main/install.sh -o install.sh
+sudo bash install.sh
+```
+
+安装过程中会提示输入：
+1. CF API Token（DNS API）
+2. Zone ID（区域 API，可选）
+3. 主域名（例如 `example.com`）
+4. 二级域名前缀（例如 `home`，根域名请输入 `@`）
+5. 记录类型（`A`/`AAAA`/`BOTH`）
+6. TTL
+7. 是否强制更新
+8. 代理模式（`keep/true/false`）
+
+---
+
+## 交互配置（仅主脚本）
+
+如果你已经有 `cf-ddns.sh`，也可以手动执行：
+
+```bash
+./cf-ddns.sh --setup
+```
+
+配置文件默认会保存到脚本同目录：
+- 例如安装后为 `/usr/local/bin/cf-ddns.conf`
+
+> ⚠️ `cf-ddns.conf` 含有敏感 token，请勿提交到 Git 仓库。
+
+---
+
+## 常用命令
+
+```bash
+# 查看当前配置（token 打码）
+./cf-ddns.sh --print
+
+# 使用现有配置执行更新
+./cf-ddns.sh --run
+
+# 重新进入交互配置
+./cf-ddns.sh --setup
+```
+
+---
+
+## 定时任务
+
+`install.sh` 默认写入：
+
+```cron
+*/5 * * * * /usr/local/bin/cf-ddns.sh --run >> /var/log/cf-ddns.log 2>&1
+```
+
+查看日志：
+
+```bash
+tail -n 100 /var/log/cf-ddns.log
+```
+
+---
+
+## 配置项说明
+
+- `CF_API_TOKEN`：Cloudflare API Token
+- `CFZONE_ID`：Cloudflare Zone ID（可选，填写后将直接使用）
+- `CFZONE_NAME`：主域名（Zone 名称）
+- `CFSUBDOMAIN`：二级域名前缀，`@` 表示根域名
+- `CFRECORD_NAME`：完整记录名（脚本会自动根据主域名 + 二级域名生成）
+- `CFRECORD_TYPE`：`A` / `AAAA` / `BOTH`
+- `CFTTL`：TTL（范围 `120-86400`）
+- `FORCE`：`true/false`，是否每次都更新
+- `PROXIED`：`keep/true/false`，是否启用 Cloudflare 代理
+
+---
+
+## 故障排查
+
+1. **提示找不到 Zone ID**
+   - 检查主域名是否正确
+   - 检查 token 是否具备 Zone Read 权限
+   - 或直接填写 `CFZONE_ID`
+
+2. **提示找不到 DNS Record**
+   - 脚本默认更新已存在记录，请先在 Cloudflare DNS 中创建记录
+   - 再执行 `--run`
+
+3. **无公网 IPv6**
+   - 若网络不支持 IPv6，请使用 `A` 或忽略 `AAAA`
+
+---
+
+## 安全建议
+
+- API Token 请使用最小权限，不要使用全局 Key
+- 配置文件建议权限 600（脚本写入时已使用 `umask 077`）
+- 不要把 `cf-ddns.conf` 上传到公开仓库
