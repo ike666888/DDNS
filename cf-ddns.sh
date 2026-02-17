@@ -22,8 +22,10 @@ CACHE_DIR="${HOME:-/tmp}"
 
 # Defaults
 CF_API_TOKEN="${CF_API_TOKEN:-}"
+CFZONE_ID="${CFZONE_ID:-}"
 CFZONE_NAME="${CFZONE_NAME:-}"
 CFRECORD_NAME="${CFRECORD_NAME:-}"
+CFSUBDOMAIN="${CFSUBDOMAIN:-}"
 CFRECORD_TYPE="${CFRECORD_TYPE:-A}"   # A | AAAA | BOTH
 CFTTL="${CFTTL:-120}"
 FORCE="${FORCE:-false}"               # true | false
@@ -31,10 +33,11 @@ PROXIED="${PROXIED:-keep}"            # keep | true | false
 
 WANIPSITE_V4="${WANIPSITE_V4:-https://api.ipify.org}"
 WANIPSITE_V6="${WANIPSITE_V6:-https://api64.ipify.org}"
-CURL_OPTS=(-fsS --max-time 10)
+CURL_OPTS=(-fsS --max-time 12 --retry 2 --retry-delay 1 --retry-all-errors)
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
+warn() { echo "WARN: $*" >&2; }
 
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
 
@@ -70,26 +73,42 @@ json_get_first_string() {
 
 cf_api() {
   local method="$1" url="$2" data="${3:-}"
+  local auth_header=( -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" )
+
   if [ -n "$data" ]; then
-    curl "${CURL_OPTS[@]}" -X "$method" "$url" \
-      -H "Authorization: Bearer $CF_API_TOKEN" \
-      -H "Content-Type: application/json" \
-      --data "$data"
+    if curl "${CURL_OPTS[@]}" -X "$method" "$url" "${auth_header[@]}" --data "$data"; then
+      return 0
+    fi
+    warn "Cloudflare API request failed, retrying with HTTP/1.1 ..."
+    curl "${CURL_OPTS[@]}" --http1.1 -X "$method" "$url" "${auth_header[@]}" --data "$data"
   else
-    curl "${CURL_OPTS[@]}" -X "$method" "$url" \
-      -H "Authorization: Bearer $CF_API_TOKEN" \
-      -H "Content-Type: application/json"
+    if curl "${CURL_OPTS[@]}" -X "$method" "$url" "${auth_header[@]}"; then
+      return 0
+    fi
+    warn "Cloudflare API request failed, retrying with HTTP/1.1 ..."
+    curl "${CURL_OPTS[@]}" --http1.1 -X "$method" "$url" "${auth_header[@]}"
   fi
 }
+
 
 get_wan_ip_v4() { curl "${CURL_OPTS[@]}" "$WANIPSITE_V4"; }
 get_wan_ip_v6() { curl "${CURL_OPTS[@]}" "$WANIPSITE_V6"; }
 
 normalize_fqdn() {
   # If user enters prefix only, make it FQDN: prefix.zone
-  if [[ "$CFRECORD_NAME" != *".${CFZONE_NAME}" ]]; then
-    CFRECORD_NAME="${CFRECORD_NAME}.${CFZONE_NAME}"
+  if [ -z "$CFSUBDOMAIN" ]; then
+    if [[ "$CFRECORD_NAME" != *".${CFZONE_NAME}" ]]; then
+      CFRECORD_NAME="${CFRECORD_NAME}.${CFZONE_NAME}"
+    fi
+    return
   fi
+
+  if [ "$CFSUBDOMAIN" = "@" ]; then
+    CFRECORD_NAME="$CFZONE_NAME"
+    return
+  fi
+
+  CFRECORD_NAME="${CFSUBDOMAIN}.${CFZONE_NAME}"
 }
 
 validate_config() {
@@ -114,7 +133,9 @@ write_config() {
   cat > "$CONF_FILE" <<EOF
 # Cloudflare DDNS config (DO NOT COMMIT to GitHub)
 CF_API_TOKEN='$CF_API_TOKEN'
+CFZONE_ID='$CFZONE_ID'
 CFZONE_NAME='$CFZONE_NAME'
+CFSUBDOMAIN='$CFSUBDOMAIN'
 CFRECORD_NAME='$CFRECORD_NAME'
 CFRECORD_TYPE='$CFRECORD_TYPE'
 CFTTL='$CFTTL'
@@ -162,12 +183,18 @@ interactive_setup() {
   load_config_if_exists
 
   CF_API_TOKEN="$(prompt "1) 输入 CF API Token" "${CF_API_TOKEN:-}" true)"
-  CFZONE_NAME="$(prompt "2) 输入 Zone 根域名 (例: example.com)" "${CFZONE_NAME:-}")"
-  CFRECORD_NAME="$(prompt "3) 输入记录 (例: home 或 home.example.com)" "${CFRECORD_NAME:-}")"
-  CFRECORD_TYPE="$(prompt "4) 记录类型 A / AAAA / BOTH" "${CFRECORD_TYPE:-A}")"
-  CFTTL="$(prompt "5) TTL 秒数 (120-86400)" "${CFTTL:-120}")"
-  FORCE="$(prompt "6) 是否强制更新 true/false" "${FORCE:-false}")"
-  PROXIED="$(prompt "7) 是否开启代理 keep/true/false (一般 keep)" "${PROXIED:-keep}")"
+  CFZONE_ID="$(prompt "2) 输入 Zone ID（可选，留空自动查询）" "${CFZONE_ID:-}")"
+  CFZONE_NAME="$(prompt "3) 输入主域名 (例: example.com)" "${CFZONE_NAME:-}")"
+  CFSUBDOMAIN="$(prompt "4) 输入二级域名前缀 (例: home，根域名填 @)" "${CFSUBDOMAIN:-}")"
+  CFRECORD_TYPE="$(prompt "5) 记录类型 A / AAAA / BOTH" "${CFRECORD_TYPE:-A}")"
+  CFTTL="$(prompt "6) TTL 秒数 (120-86400)" "${CFTTL:-120}")"
+  FORCE="$(prompt "7) 是否强制更新 true/false" "${FORCE:-false}")"
+  PROXIED="$(prompt "8) 是否开启代理 keep/true/false (一般 keep)" "${PROXIED:-keep}")"
+
+  # Normalize common user input forms
+  CFRECORD_TYPE="$(echo "$CFRECORD_TYPE" | tr '[:lower:]' '[:upper:]')"
+  FORCE="$(echo "$FORCE" | tr '[:upper:]' '[:lower:]')"
+  PROXIED="$(echo "$PROXIED" | tr '[:upper:]' '[:lower:]')"
 
   normalize_fqdn
   validate_config
@@ -181,7 +208,9 @@ print_config() {
   [ -f "$CONF_FILE" ] || die "Config not found: $CONF_FILE"
   echo "CONF_FILE=$CONF_FILE"
   echo "CF_API_TOKEN=$(mask_token "${CF_API_TOKEN:-}")"
+  echo "CFZONE_ID=${CFZONE_ID:-}"
   echo "CFZONE_NAME=${CFZONE_NAME:-}"
+  echo "CFSUBDOMAIN=${CFSUBDOMAIN:-}"
   echo "CFRECORD_NAME=${CFRECORD_NAME:-}"
   echo "CFRECORD_TYPE=${CFRECORD_TYPE:-}"
   echo "CFTTL=${CFTTL:-}"
@@ -192,6 +221,11 @@ print_config() {
 }
 
 get_zone_id() {
+  if [ -n "$CFZONE_ID" ]; then
+    echo "$CFZONE_ID"
+    return 0
+  fi
+
   local zone_json zone_id
   zone_json="$(cf_api GET "https://api.cloudflare.com/client/v4/zones?name=$CFZONE_NAME")" || die "Zone query failed"
   if has_cmd jq; then
@@ -289,16 +323,22 @@ run_ddns() {
   normalize_fqdn
   validate_config
 
-  # Cache zone id in conf dir (safe)
+  # Zone ID: prefer explicit config, then cache, then API lookup
   local zid_file="${CACHE_DIR}/.cf-zone_$(cache_key "$CFZONE_NAME").txt"
-  local zone_id=""
-  if [ -f "$zid_file" ]; then
-    zone_id="$(cat "$zid_file" 2>/dev/null || true)"
-  fi
-  if [ -z "$zone_id" ]; then
-    info "Fetching zone id..."
-    zone_id="$(get_zone_id)"
-    echo "$zone_id" > "$zid_file"
+  local zone_id="${CFZONE_ID:-}"
+  if [ -n "$zone_id" ]; then
+    info "Using Zone ID from config"
+  else
+    if [ -f "$zid_file" ]; then
+      zone_id="$(cat "$zid_file" 2>/dev/null || true)"
+    fi
+    if [ -n "$zone_id" ]; then
+      info "Using cached Zone ID"
+    else
+      info "Fetching Zone ID from Cloudflare API..."
+      zone_id="$(get_zone_id)"
+      echo "$zone_id" > "$zid_file"
+    fi
   fi
 
   case "$CFRECORD_TYPE" in
