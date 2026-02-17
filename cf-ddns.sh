@@ -91,6 +91,30 @@ cf_api() {
 }
 
 
+
+validate_api_token() {
+  local verify_json ok status
+  verify_json="$(cf_api GET "https://api.cloudflare.com/client/v4/user/tokens/verify" 2>/dev/null || true)"
+  [ -n "$verify_json" ] || return 1
+
+  if has_cmd jq; then
+    ok="$(echo "$verify_json" | jq -r '.success // false')"
+    status="$(echo "$verify_json" | jq -r '.result.status // empty')"
+  else
+    if printf '%s' "$verify_json" | grep -q '"success":true'; then
+      ok="true"
+    else
+      ok="false"
+    fi
+    status="$(json_get_first_string "$verify_json" "status")"
+  fi
+
+  [ "$ok" = "true" ] || return 1
+  [ -z "$status" ] || [ "$status" = "active" ] || return 1
+  return 0
+}
+
+
 get_wan_ip_v4() { curl "${CURL_OPTS[@]}" "$WANIPSITE_V4"; }
 get_wan_ip_v6() { curl "${CURL_OPTS[@]}" "$WANIPSITE_V6"; }
 
@@ -187,8 +211,12 @@ interactive_setup() {
   info "（建议使用 Zone -> DNS -> Edit 的 API Token；不要把 token 提交到 GitHub）"
   load_config_if_exists
 
-  CF_API_TOKEN="$(prompt "1) 输入 CF API Token" "${CF_API_TOKEN:-}" true)"
-  CFZONE_ID="$(prompt "2) 输入 Zone ID（可选，留空自动查询）" "${CFZONE_ID:-}")"
+  CF_API_TOKEN="$(prompt "1) 输入 CF API Token（不是 Global API Key）" "${CF_API_TOKEN:-}" true)"
+  while [ -z "$CF_API_TOKEN" ]; do
+    warn "CF_API_TOKEN 不能为空"
+    CF_API_TOKEN="$(prompt "1) 输入 CF API Token（不是 Global API Key）" "${CF_API_TOKEN:-}" true)"
+  done
+  CFZONE_ID="$(prompt "2) 输入 Zone ID（可选，留空自动查询；不要填账户ID）" "${CFZONE_ID:-}")"
   CFZONE_NAME="$(prompt "3) 输入主域名 (例: example.com)" "${CFZONE_NAME:-}")"
   CFSUBDOMAIN="$(prompt "4) 输入二级域名前缀 (例: home，根域名填 @)" "${CFSUBDOMAIN:-}")"
   CFRECORD_TYPE="$(prompt "5) 记录类型 A / AAAA / BOTH" "${CFRECORD_TYPE:-A}")"
@@ -203,6 +231,9 @@ interactive_setup() {
 
   normalize_fqdn
   validate_config
+
+  info "正在校验 API Token..."
+  validate_api_token || die "CF_API_TOKEN 无效或权限不足。请使用 API Token（Zone DNS Edit + Zone Read），不要填 Global API Key/账户ID。"
 
   info "将更新的记录：$CFRECORD_NAME  类型：$CFRECORD_TYPE  TTL：$CFTTL  PROXIED：$PROXIED"
   write_config
@@ -247,11 +278,11 @@ get_zone_id() {
       echo "$CFZONE_ID"
       return 0
     fi
-    warn "Configured CFZONE_ID seems invalid, fallback to zone-name lookup"
+    warn "Configured CFZONE_ID seems invalid (可能填成账户ID), fallback to zone-name lookup"
   fi
 
   local zone_json zone_id
-  zone_json="$(cf_api GET "https://api.cloudflare.com/client/v4/zones?name=$CFZONE_NAME")" || die "Zone query failed"
+  zone_json="$(cf_api GET "https://api.cloudflare.com/client/v4/zones?name=$CFZONE_NAME")" || die "Zone query failed. 请确认 Token 权限正确，且 Zone ID 不是账户ID。"
   if has_cmd jq; then
     zone_id="$(echo "$zone_json" | jq -r '.result[0].id // empty')"
   else
@@ -384,6 +415,7 @@ run_ddns() {
 
   normalize_fqdn
   validate_config
+  validate_api_token || die "CF_API_TOKEN 无效或权限不足。请确认你使用的是 API Token（不是 Global API Key），并授予 Zone DNS Edit + Zone Read。"
 
   # Zone ID: prefer explicit config, then cache, then API lookup
   local zid_file="${CACHE_DIR}/.cf-zone_$(cache_key "$CFZONE_NAME").txt"

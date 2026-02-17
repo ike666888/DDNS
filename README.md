@@ -5,7 +5,7 @@
 - `cf-ddns.sh`：核心更新脚本（支持交互配置和定时更新）
 
 ## 功能特点
-- 交互式输入 Cloudflare **DNS API Token**
+- 交互式输入 Cloudflare **DNS API Token**（不是 Global API Key）
 - 可选输入 Cloudflare **Zone ID（区域 API）**，留空自动按主域名查询
 - 交互输入 **主域名** 与 **二级域名**（支持 `@` 根域名）
 - 支持记录类型：`A` / `AAAA` / `BOTH`
@@ -32,6 +32,9 @@
 请先在 Cloudflare 创建一个 API Token（推荐最小权限）：
 - Zone → DNS → Edit
 - Zone → Zone → Read
+
+> 必须使用 **API Token**，不要使用 **Global API Key**。
+> `Zone ID` 和 `账户 ID` 不是同一个值，脚本里填写的是 `Zone ID`。
 
 安装机需要：
 - Linux 环境
@@ -86,7 +89,7 @@ AUTO_APT_UPGRADE=true sudo bash install.sh
 
 安装过程中会提示输入：
 1. CF API Token（DNS API）
-2. Zone ID（区域 API，可选）
+2. Zone ID（区域 ID，可选，**不要填账户 ID**）
 3. 主域名（例如 `example.com`）
 4. 二级域名前缀（例如 `home`，根域名请输入 `@`）
 5. 记录类型（`A`/`AAAA`/`BOTH`）
