@@ -44,8 +44,40 @@
 ## 一键安装
 
 ```bash
+# 写成两行执行（不要连在一行）
 curl -fsSL https://raw.githubusercontent.com/ike666888/DDNS/main/install.sh -o install.sh
 sudo bash install.sh
+```
+
+或一行版：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ike666888/DDNS/main/install.sh | sudo bash
+```
+
+
+
+### 依赖自动安装说明
+
+`install.sh` 现在会自动检查并安装基础依赖（默认开启）：
+- 下载工具：`curl` 或 `wget`
+- 定时任务工具：`crontab`（Debian/Ubuntu 安装 `cron`，RHEL/Fedora 安装 `cronie`）
+
+在 `apt` 系统上：
+- 默认会执行 `apt-get update`（可关闭）
+- 默认**不会**执行 `apt-get upgrade`（可按需开启）
+
+可用环境变量：
+
+```bash
+# 完全关闭依赖自动安装
+AUTO_INSTALL_DEPS=false sudo bash install.sh
+
+# 关闭 apt update
+AUTO_APT_UPDATE=false sudo bash install.sh
+
+# 开启 apt upgrade（默认 false）
+AUTO_APT_UPGRADE=true sudo bash install.sh
 ```
 
 安装过程中会提示输入：

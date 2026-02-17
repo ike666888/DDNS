@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_URL="https://github.com/ike666888/DDNS"
 RAW_BASE_MAIN="https://raw.githubusercontent.com/ike666888/DDNS/main"
 RAW_BASE_MASTER="https://raw.githubusercontent.com/ike666888/DDNS/master"
 
@@ -16,8 +15,16 @@ CRON_CMD="${DDNS_BIN} --run >> ${LOG_FILE} 2>&1"
 CRON_LINE="${CRON_SCHEDULE} ${CRON_CMD}"
 CRON_MARK="# cf-ddns (cloudflare ddns) managed by install.sh"
 
+# package behavior
+AUTO_INSTALL_DEPS="${AUTO_INSTALL_DEPS:-true}"   # true|false
+AUTO_APT_UPDATE="${AUTO_APT_UPDATE:-true}"       # true|false (for apt)
+AUTO_APT_UPGRADE="${AUTO_APT_UPGRADE:-false}"    # true|false (for apt)
+
+UPDATED_APT="false"
+
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
+warn() { echo "WARN: $*" >&2; }
 
 need_root() {
   if [ "$(id -u)" -ne 0 ]; then
@@ -25,12 +32,95 @@ need_root() {
   fi
 }
 
+has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+run_apt_update_once() {
+  if [ "$UPDATED_APT" = "true" ]; then
+    return 0
+  fi
+  if [ "$AUTO_APT_UPDATE" = "true" ]; then
+    info "Running apt-get update ..."
+    apt-get update -y
+  else
+    info "Skip apt-get update (AUTO_APT_UPDATE=false)"
+  fi
+  UPDATED_APT="true"
+}
+
+install_with_apt() {
+  local pkg="$1"
+  run_apt_update_once
+  info "Installing package via apt: $pkg"
+  DEBIAN_FRONTEND=noninteractive apt-get install -y "$pkg"
+}
+
+install_with_dnf() {
+  local pkg="$1"
+  info "Installing package via dnf: $pkg"
+  dnf install -y "$pkg"
+}
+
+install_with_yum() {
+  local pkg="$1"
+  info "Installing package via yum: $pkg"
+  yum install -y "$pkg"
+}
+
+install_pkg() {
+  local apt_pkg="$1" dnf_pkg="$2" yum_pkg="$3"
+  if has_cmd apt-get; then
+    install_with_apt "$apt_pkg"
+  elif has_cmd dnf; then
+    install_with_dnf "$dnf_pkg"
+  elif has_cmd yum; then
+    install_with_yum "$yum_pkg"
+  else
+    die "No supported package manager found (apt-get/dnf/yum)."
+  fi
+}
+
+ensure_dependencies() {
+  if [ "$AUTO_INSTALL_DEPS" != "true" ]; then
+    info "Skip dependency auto-install (AUTO_INSTALL_DEPS=false)"
+    return 0
+  fi
+
+  info "Checking runtime dependencies..."
+
+  # Need one downloader: curl or wget
+  if ! has_cmd curl && ! has_cmd wget; then
+    info "Neither curl nor wget found, trying to install curl..."
+    install_pkg "curl" "curl" "curl"
+  fi
+
+  # Need crontab command
+  if ! has_cmd crontab; then
+    info "crontab not found, trying to install cron package..."
+    # Debian/Ubuntu: cron, RHEL/Fedora: cronie
+    if has_cmd apt-get; then
+      install_pkg "cron" "cronie" "cronie"
+    else
+      install_pkg "cronie" "cronie" "cronie"
+    fi
+  fi
+
+  if [ "$AUTO_APT_UPGRADE" = "true" ] && has_cmd apt-get; then
+    run_apt_update_once
+    info "Running apt-get upgrade ..."
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+  fi
+
+  # hard check
+  has_cmd curl || has_cmd wget || die "Need curl or wget."
+  has_cmd crontab || die "Need crontab command."
+}
+
 download() {
   local url="$1"
   local out="$2"
-  if command -v curl >/dev/null 2>&1; then
+  if has_cmd curl; then
     curl -fsSL --max-time 30 "$url" -o "$out"
-  elif command -v wget >/dev/null 2>&1; then
+  elif has_cmd wget; then
     wget -qO "$out" "$url"
   else
     die "Need curl or wget to download files."
@@ -62,13 +152,10 @@ install_ddns() {
 
   fetch_script "$tmp"
   # sanity check
-  grep -q "Cloudflare DDNS" "$tmp" || info "Warning: downloaded script doesn't contain expected banner (still installing)."
+  grep -q "Cloudflare DDNS" "$tmp" || warn "downloaded script doesn't contain expected banner (still installing)."
 
   install -m 0755 "$tmp" "$DDNS_BIN"
 
-  # ensure config file lives alongside the script (script reads ./cf-ddns.conf by default)
-  # Our interactive script saves config relative to its own directory if placed there.
-  # We'll run setup from BIN_DIR so it writes ${BIN_DIR}/cf-ddns.conf.
   info "Installed: ${DDNS_BIN}"
 }
 
@@ -86,21 +173,17 @@ setup_config_if_missing() {
 install_cron() {
   info "Installing cron job (idempotent)..."
 
-  # Ensure crontab exists and avoid duplicates
   local current
   current="$(crontab -l 2>/dev/null || true)"
 
-  # Remove any old lines for cf-ddns.sh (optional cleanup), then add ours once
   local cleaned
   cleaned="$(echo "$current" | grep -v -F "$DDNS_BIN" || true)"
 
-  # If already has our exact command, skip
   if echo "$current" | grep -Fq "$CRON_CMD"; then
     info "Cron already contains cf-ddns job. Skip."
     return 0
   fi
 
-  # Write new crontab
   {
     echo "$cleaned"
     echo "$CRON_MARK"
@@ -118,7 +201,7 @@ run_once() {
 }
 
 print_next_steps() {
-  cat <<EOF
+  cat <<EOF2
 
 All set ✅
 
@@ -137,11 +220,12 @@ View logs:
 If you need to reconfigure:
   cd ${BIN_DIR} && ${DDNS_BIN} --setup
 
-EOF
+EOF2
 }
 
 main() {
   need_root
+  ensure_dependencies
   ensure_log_file
   install_ddns
   setup_config_if_missing
