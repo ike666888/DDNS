@@ -114,6 +114,7 @@ validate_api_token() {
   return 0
 }
 
+
 get_wan_ip_v4() { curl "${CURL_OPTS[@]}" "$WANIPSITE_V4"; }
 get_wan_ip_v6() { curl "${CURL_OPTS[@]}" "$WANIPSITE_V6"; }
 
